@@ -4,8 +4,6 @@ import time
 import argparse
 import re
 import logging
-import smtplib
-from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 
 import requests
@@ -96,6 +94,13 @@ def month_range(yyyy_mm):
     return start, end
 
 
+def prev_month_yyyy_mm(today=None):
+    today = today or date.today()
+    first = date(today.year, today.month, 1)
+    prev_last = first - timedelta(days=1)
+    return "%04d-%02d" % (prev_last.year, prev_last.month)
+
+
 def looks_like_uuid(s):
     return bool(re.match(r"^[0-9a-fA-F-]{36}$", str(s)))
 
@@ -108,49 +113,17 @@ def net_from_item(it):
     return float(qty) * float(price)
 
 
-# =========================
-# email
-# =========================
-
-def send_email(report_text, csv_path, log_path):
-    sender = os.getenv("MAIL_ADDRESS")
-    password = os.getenv("MAIL_APP_PASSWORD")
-    receivers = os.getenv("EMAIL_TO", "")
-
-    if not sender or not password or not receivers:
-        return
-
-    rec_list = [r.strip() for r in receivers.split(",")][:5]
-
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = ", ".join(rec_list)
-    msg["Subject"] = "CSV C Report"
-    msg.set_content(report_text)
-
-    for path in [csv_path, log_path]:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                msg.add_attachment(f.read(), maintype="application", subtype="octet-stream", filename=os.path.basename(path))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as s:
-        s.starttls()
-        s.login(sender, password)
-        s.send_message(msg)
-
-
-# =========================
-# main
-# =========================
-
 def main():
     load_dotenv()
 
     p = argparse.ArgumentParser()
-    p.add_argument("--month", required=True)
-    p.add_argument("--out", default=None)
+    p.add_argument("--month", default=None, help="YYYY-MM (default: previous month)")
+    p.add_argument("--out", default=None, help="output CSV path (default: csv/csv_C_YYYY-MM.csv)")
     p.add_argument("--throttle", type=float, default=0.6)
     args = p.parse_args()
+
+    if not args.month:
+        args.month = prev_month_yyyy_mm()
 
     token = os.getenv("LEXOFFICE_TOKEN")
     if not token:
@@ -159,12 +132,14 @@ def main():
     base = normalize_base(os.getenv("LEXOFFICE_BASE_URL"))
     logger, log_path = setup_logger("csv_c")
 
-    out = args.out or f"csvC_{args.month}.csv"
+    ensure_dir("csv")
+    out = args.out or os.path.join("csv", "csv_C_%s.csv" % args.month)
+
     ensure_dir("email")
 
     session = build_session(token)
 
-    logger.info("start month=%s", args.month)
+    logger.info("start month=%s out=%s", args.month, out)
 
     start, end = month_range(args.month)
 
@@ -242,14 +217,13 @@ Month: {args.month}
 Rows: {len(rows)}
 File: {out}
 Log: {log_path}
-"""
+""".strip() + "\n"
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     email_file = f"email/csv_C_{ts}.txt"
     write_text_file(email_file, report)
 
     logger.info("done rows=%s", len(rows))
-    send_email(report, out, log_path)
 
 
 if __name__ == "__main__":

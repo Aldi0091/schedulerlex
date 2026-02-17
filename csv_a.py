@@ -13,10 +13,6 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
-import smtplib
-import mimetypes
-from email.message import EmailMessage
-
 
 DEFAULT_TIMEOUT = 30
 
@@ -27,7 +23,6 @@ E_SCHEMA = "E_SCHEMA"
 E_MAPPING = "E_MAPPING"
 E_WRITE = "E_WRITE"
 E_RUNTIME = "E_RUNTIME"
-E_EMAIL = "E_EMAIL"
 
 
 def ensure_dir(path):
@@ -42,6 +37,18 @@ def write_text_file(path, text):
     ensure_dir(os.path.dirname(path))
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
+
+
+def prev_month_yyyy_mm(today=None):
+    today = today or date.today()
+    first = date(today.year, today.month, 1)
+    prev_last = first - timedelta(days=1)
+    return "%04d-%02d" % (prev_last.year, prev_last.month)
+
+
+def default_out_path_for_month(yyyy_mm, base_dir="csv"):
+    ensure_dir(base_dir)
+    return os.path.join(base_dir, "csv_A_%s.csv" % yyyy_mm)
 
 
 def setup_logger(log_file=None, level="INFO"):
@@ -458,110 +465,6 @@ def build_email_report(status, error_code, log_file, args, summary_lines, hint_i
     return "\n".join(lines)
 
 
-def _split_email_report(email_report_text):
-    # build_email_report starts with: "Subject: ..."
-    # We extract subject for EmailMessage header, and keep body user-friendly.
-    lines = (email_report_text or "").splitlines()
-    subject = ""
-    body_lines = lines[:]
-    if lines and lines[0].lower().startswith("subject:"):
-        subject = lines[0].split(":", 1)[1].strip()
-        body_lines = lines[1:]
-        if body_lines and body_lines[0].strip() == "":
-            body_lines = body_lines[1:]
-    if not subject:
-        subject = "[Lexoffice CSV A] Report"
-    body = "\n".join(body_lines).strip() + "\n"
-    return subject, body
-
-
-def _read_recipients_from_env():
-    # EMAIL_TO="a@x.com,b@y.com,c@z.com" (max 5)
-    raw = (os.getenv("EMAIL_TO") or "").strip()
-    if not raw:
-        return []
-    parts = []
-    for p in raw.replace(";", ",").split(","):
-        p = (p or "").strip()
-        if p:
-            parts.append(p)
-    # unique keep order
-    uniq = []
-    seen = set()
-    for p in parts:
-        if p.lower() in seen:
-            continue
-        seen.add(p.lower())
-        uniq.append(p)
-    return uniq[:5]
-
-
-def _guess_attachment_mime(path):
-    mt, enc = mimetypes.guess_type(path)
-    if not mt:
-        return "application", "octet-stream"
-    if "/" not in mt:
-        return "application", "octet-stream"
-    maintype, subtype = mt.split("/", 1)
-    return maintype, subtype
-
-
-def send_email_with_attachments(logger, email_report_text, csv_path, log_path):
-    mail_address = (os.getenv("MAIL_ADDRESS") or "").strip()
-    mail_app_password = (os.getenv("MAIL_APP_PASSWORD") or "").strip()
-    recipients = _read_recipients_from_env()
-
-    if not mail_address or not mail_app_password:
-        logger.info("%s email not sent (missing MAIL_ADDRESS/MAIL_APP_PASSWORD in .env)", E_EMAIL)
-        return False
-
-    if not recipients:
-        logger.info("%s email not sent (missing EMAIL_TO in .env)", E_EMAIL)
-        return False
-
-    subject, body = _split_email_report(email_report_text)
-
-    msg = EmailMessage()
-    msg["From"] = mail_address
-    msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    attach_paths = []
-
-    if csv_path and os.path.isfile(csv_path):
-        attach_paths.append(csv_path)
-    if log_path and os.path.isfile(log_path):
-        attach_paths.append(log_path)
-
-    for path in attach_paths:
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
-            maintype, subtype = _guess_attachment_mime(path)
-            filename = os.path.basename(path)
-            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
-        except Exception as e:
-            logger.warning("%s failed to attach file=%s err=%s", E_EMAIL, path, e)
-
-    smtp_host = (os.getenv("SMTP_HOST") or "smtp.gmail.com").strip()
-    smtp_port = int(os.getenv("SMTP_PORT") or "587")
-
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(mail_address, mail_app_password)
-            server.send_message(msg)
-
-        logger.info("%s email sent ok to=%s subject=%s attachments=%s",
-                    E_EMAIL, recipients, subject, len(attach_paths))
-        return True
-
-    except Exception as e:
-        logger.error("%s email send failed err=%s", E_EMAIL, e)
-        return False
-
-
 def main():
     load_dotenv()
 
@@ -569,7 +472,7 @@ def main():
     p.add_argument("--mapping", default="mapping.yaml", help="path to mapping.yaml")
     p.add_argument("--invoice-id", default=None, help="single invoice id")
     p.add_argument("--month", default=None, help="YYYY-MM to export all invoices in that month")
-    p.add_argument("--out", default="csv/csv_A.csv", help="output CSV path")
+    p.add_argument("--out", default=None, help="output CSV path (default: csv/csv_A_YYYY-MM.csv)")
     p.add_argument("--delimiter", default=",", help="CSV delimiter (default , ; also possible)")
     p.add_argument("--throttle", type=float, default=0.6, help="sleep seconds before each request")
     p.add_argument("--log-level", default="INFO", help="DEBUG/INFO/WARNING/ERROR")
@@ -579,7 +482,7 @@ def main():
     args = p.parse_args()
 
     if not args.invoice_id and not args.month:
-        raise SystemExit("Provide --invoice-id or --month YYYY-MM")
+        args.month = prev_month_yyyy_mm()
 
     token = os.getenv("LEXOFFICE_TOKEN")
     if not token:
@@ -592,13 +495,20 @@ def main():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.log_file = os.path.join("logs", "csv_a_%s.log" % ts)
 
+    if not args.out:
+        if args.month:
+            args.out = default_out_path_for_month(args.month)
+        else:
+            ensure_dir("csv")
+            args.out = os.path.join("csv", "csv_A_invoice_%s.csv" % args.invoice_id)
+
     ensure_dir("email")
     ts_email = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     email_report_file = os.path.join("email", "csv_A_%s.txt" % ts_email)
 
     logger = setup_logger(args.log_file, level=args.log_level)
     logger.info("start csv_a invoice_id=%s month=%s out=%s mapping=%s",
-                args.invoice_id, args.month, args.out, args.mapping)
+            args.invoice_id, args.month, args.out, args.mapping)
 
     session = build_session(token)
     mapping = load_mapping(args.mapping, logger)
@@ -655,19 +565,6 @@ def main():
         write_text_file(email_report_file, email_report)
         logger.info("email report written: %s", email_report_file)
 
-        sent = send_email_with_attachments(
-            logger=logger,
-            email_report_text=email_report,
-            csv_path=args.out,
-            log_path=args.log_file,
-        )
-
-        print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
-
-        if not sent:
-            # If no need for exception, then replace to logger.warning(...) and return
-            raise SystemExit(3)
-
         logger.info("done ok out=%s rows=%s log=%s", args.out, len(all_rows), args.log_file)
 
     except Exception as e:
@@ -696,15 +593,6 @@ def main():
 
         write_text_file(email_report_file, email_report)
         logger.info("email report written: %s", email_report_file)
-
-        # get when failed for report
-        send_email_with_attachments(
-            logger=logger,
-            email_report_text=email_report,
-            csv_path=args.out if os.path.isfile(args.out) else None,
-            log_path=args.log_file,
-            email_report_file_path=email_report_file,
-        )
 
         print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
         raise SystemExit(2)

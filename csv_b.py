@@ -11,9 +11,6 @@ from datetime import datetime
 import requests
 from dotenv import load_dotenv
 
-import smtplib
-from email.message import EmailMessage
-
 
 DEFAULT_TIMEOUT = 30
 
@@ -412,64 +409,6 @@ def build_email_report(status, error_code, log_file, out_csv, email_report_file,
     return "\n".join(lines)
 
 
-def _split_receivers(s):
-    s = (s or "").strip()
-    if not s:
-        return []
-    parts = [p.strip() for p in s.split(",") if p.strip()]
-    return parts[:5]
-
-
-def _read_file_bytes(path):
-    with open(path, "rb") as f:
-        return f.read()
-
-
-def send_email_with_attachments(subject, body, sender, app_password, receivers, attachments, logger):
-    if not sender or not app_password or not receivers:
-        logger.info("email skipped (missing MAIL_ADDRESS/MAIL_APP_PASSWORD/EMAIL_TO)")
-        return False
-
-    if len(receivers) > 5:
-        receivers = receivers[:5]
-
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = ", ".join(receivers)
-    msg["Subject"] = subject
-    msg.set_content(body or "")
-
-    for path in (attachments or []):
-        if not path:
-            continue
-        if not os.path.isfile(path):
-            continue
-        filename = os.path.basename(path)
-        try:
-            data = _read_file_bytes(path)
-            maintype = "text"
-            subtype = "plain"
-            if filename.lower().endswith(".csv"):
-                maintype, subtype = "text", "csv"
-            elif filename.lower().endswith(".log") or filename.lower().endswith(".txt"):
-                maintype, subtype = "text", "plain"
-
-            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
-        except Exception as e:
-            logger.warning("cannot attach file=%s err=%s", path, e)
-
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(sender, app_password)
-            server.send_message(msg)
-        logger.info("email sent to=%s attachments=%s", receivers, len(attachments or []))
-        return True
-    except Exception as e:
-        logger.error("email send failed err=%s", e)
-        return False
-
-
 def main():
     load_dotenv()
 
@@ -503,16 +442,12 @@ def main():
     out = args.out
     if not out:
         ensure_dir("csv")
-        out = os.path.join("csv", "csv_B_open_items.csv")
+        ts_csv = datetime.now().strftime("%Y-%m-%d")
+        out = os.path.join("csv", "csv_B_open_items_%s.csv" % ts_csv)
 
     logger.info("start csv_b out=%s base_url=%s", out, base_url)
 
     session = build_session(token)
-
-    # email config (optional)
-    mail_address = (os.getenv("MAIL_ADDRESS") or "").strip()
-    mail_app_password = (os.getenv("MAIL_APP_PASSWORD") or "").strip()
-    receivers = _split_receivers(os.getenv("EMAIL_TO") or "")
 
     try:
         open_statuses = ["open", "sepadebit"]
@@ -546,18 +481,6 @@ def main():
 
         print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
 
-        # send email (optional)
-        subject_line = (email_report.splitlines()[0].replace("Subject: ", "").strip() if email_report else "Lexoffice CSV B")
-        send_email_with_attachments(
-            subject=subject_line,
-            body=email_report,
-            sender=mail_address,
-            app_password=mail_app_password,
-            receivers=receivers,
-            attachments=[out, args.log_file],
-            logger=logger
-        )
-
         logger.info("done ok out=%s rows=%s log=%s", out, len(rows), args.log_file)
 
     except Exception as e:
@@ -588,17 +511,6 @@ def main():
         logger.info("email report written: %s", email_report_file)
 
         print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
-
-        subject_line = (email_report.splitlines()[0].replace("Subject: ", "").strip() if email_report else "Lexoffice CSV B FAILED")
-        send_email_with_attachments(
-            subject=subject_line,
-            body=email_report,
-            sender=mail_address,
-            app_password=mail_app_password,
-            receivers=receivers,
-            attachments=[args.log_file, email_report_file],
-            logger=logger
-        )
 
         raise SystemExit(2)
 
