@@ -1,17 +1,42 @@
 import os
 import csv
-import json
 import time
 import argparse
 import re
 import unicodedata
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
 
+import smtplib
+from email.message import EmailMessage
+
+
 DEFAULT_TIMEOUT = 30
+
+# Error codes
+E_CONFIG = "E_CONFIG"
+E_HTTP = "E_HTTP"
+E_SCHEMA = "E_SCHEMA"
+E_WRITE = "E_WRITE"
+E_RUNTIME = "E_RUNTIME"
+
+
+def ensure_dir(path):
+    if not path:
+        return
+    os.makedirs(path, exist_ok=True)
+
+
+def write_text_file(path, text):
+    if not path:
+        return
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text or "")
 
 
 def normalize_base(base_url):
@@ -21,35 +46,35 @@ def normalize_base(base_url):
     return base_url.rstrip("/")
 
 
-def ensure_dir(path):
-    if path and not os.path.isdir(path):
-        os.makedirs(path, exist_ok=True)
+def setup_logger(log_file=None, level="INFO"):
+    level = (level or "INFO").upper()
+    level_value = getattr(logging, level, logging.INFO)
 
-
-def setup_logger(name, log_dir="logs", level=logging.INFO):
-    ensure_dir(log_dir)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(log_dir, f"{name}_{ts}.log")
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.handlers = []
+    logger = logging.getLogger("lex_csv_b")
+    logger.setLevel(level_value)
     logger.propagate = False
 
-    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    if logger.handlers:
+        return logger
 
-    fh = logging.FileHandler(log_path, encoding="utf-8")
-    fh.setLevel(level)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    fmt = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
     ch = logging.StreamHandler()
-    ch.setLevel(level)
+    ch.setLevel(level_value)
     ch.setFormatter(fmt)
     logger.addHandler(ch)
 
-    logger.info("logger initialized path=%s", log_path)
-    return logger, log_path
+    if log_file:
+        ensure_dir(os.path.dirname(log_file))
+        fh = RotatingFileHandler(log_file, maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+        fh.setLevel(level_value)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+
+    return logger
 
 
 def build_session(token):
@@ -82,30 +107,36 @@ def request_json(session, method, url, logger, params=None, throttle=0.6, max_re
 
             if r.status_code in (429, 502, 503, 504):
                 wait = min(10, attempt * 1.5)
-                logger.warning("HTTP %s retry in %.1fs attempt=%s/%s url=%s", r.status_code, wait, attempt, max_retries, r.url)
+                logger.warning("%s retry in %.1fs (attempt %s/%s) url=%s",
+                               E_HTTP, wait, attempt, max_retries, r.url)
                 time.sleep(wait)
-                last = (r.status_code, r.text[:2000])
+                last = (r.status_code, (r.text or "")[:2000])
                 continue
-
-            if r.status_code >= 400:
-                logger.error("HTTP %s error url=%s body=%s", r.status_code, r.url, (r.text or "")[:2000])
 
             out = {
                 "ok": r.status_code < 400,
                 "status": r.status_code,
                 "url": r.url,
                 "data": safe_json(r),
-                "text": (r.text or "")[:4000],
             }
+
+            if r.status_code >= 400:
+                text = (r.text or "")[:4000]
+                out["text"] = text
+                logger.error("%s http_error status=%s url=%s body=%s",
+                             E_HTTP, r.status_code, r.url, text)
+
             return out
 
         except Exception as e:
             wait = min(10, attempt * 1.5)
-            logger.warning("exception retry in %.1fs attempt=%s/%s url=%s err=%s", wait, attempt, max_retries, url, e)
+            logger.warning("%s exception retry in %.1fs (attempt %s/%s) -> %s",
+                           E_HTTP, wait, attempt, max_retries, e)
             time.sleep(wait)
             last = str(e)
 
-    return {"ok": False, "status": None, "url": url, "error": last, "data": None, "text": ""}
+    logger.error("%s request_failed_after_retries url=%s last=%s", E_HTTP, url, last)
+    return {"ok": False, "status": None, "url": url, "error": last, "data": None}
 
 
 def parse_date_ddmmyyyy(value):
@@ -116,8 +147,8 @@ def parse_date_ddmmyyyy(value):
         return dt.strftime("%d.%m.%Y")
     except Exception:
         try:
-            d = datetime.fromisoformat(value[:19])
-            return d.strftime("%d.%m.%Y")
+            dt = datetime.fromisoformat(value[:19])
+            return dt.strftime("%d.%m.%Y")
         except Exception:
             return value
 
@@ -167,7 +198,7 @@ def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses
     while True:
         resp = request_json(session, "GET", url, logger, params=params, throttle=throttle)
         if not resp["ok"]:
-            raise SystemExit(json.dumps(resp, ensure_ascii=False, indent=2))
+            raise RuntimeError("%s voucherlist_failed status=%s url=%s" % (E_HTTP, resp.get("status"), resp.get("url")))
 
         data = resp["data"] or {}
         content = data.get("content") or []
@@ -191,11 +222,12 @@ def fetch_invoice_detail_net(session, base_url, logger, invoice_id, throttle):
 
     inv = resp["data"] or {}
     tp = inv.get("totalPrice") or {}
-    if "totalNetAmount" in tp and tp["totalNetAmount"] is not None:
-        try:
-            return float(tp["totalNetAmount"])
-        except Exception:
-            return None
+    for key in ("totalNetAmount", "netTotal", "netAmount"):
+        if key in tp and tp[key] is not None:
+            try:
+                return float(tp[key])
+            except Exception:
+                return None
     return None
 
 
@@ -259,7 +291,6 @@ def classify_kind(voucher_type):
 def resolve_total_net(session, base_url, logger, voucher_meta, throttle):
     voucher_type = (voucher_meta.get("voucherType") or "").lower()
     vid = voucher_meta.get("id")
-
     if not vid:
         return None
 
@@ -269,7 +300,6 @@ def resolve_total_net(session, base_url, logger, voucher_meta, throttle):
     if voucher_type == "purchaseinvoice":
         return fetch_voucher_detail_net(session, base_url, logger, vid, throttle)
 
-    # если внезапно прилетели salesinvoice и т.п. (тоже через /v1/vouchers)
     return fetch_voucher_detail_net(session, base_url, logger, vid, throttle)
 
 
@@ -278,11 +308,10 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
     rows = []
 
     for i, v in enumerate(vouchers, 1):
-        voucher_type = v.get("voucherType") or ""
+        voucher_type = (v.get("voucherType") or "").lower()
         kind = classify_kind(voucher_type)
 
-        # фильтруем только нужные типы, чтобы не тащить всё подряд
-        if (voucher_type or "").lower() not in ("invoice", "purchaseinvoice"):
+        if voucher_type not in ("invoice", "purchaseinvoice"):
             continue
 
         partner_name = sanitize_partner_name(v.get("contactName") or "")
@@ -296,9 +325,8 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
 
         total_net = resolve_total_net(session, base_url, logger, v, throttle)
         if total_net is None:
-            # запасной вариант: если net не нашли, логируем и ставим 0.00,
-            # чтобы CSV всё равно собрался (и ты увидел проблемные места).
-            logger.warning("cannot resolve net amount voucherType=%s id=%s voucherNumber=%s", voucher_type, v.get("id"), v.get("voucherNumber"))
+            logger.warning("cannot resolve net amount voucherType=%s id=%s voucherNumber=%s",
+                           v.get("voucherType"), v.get("id"), v.get("voucherNumber"))
             total_net = 0.0
 
         rows.append([
@@ -316,7 +344,7 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
     return rows
 
 
-def write_csv(path, rows, delimiter=","):
+def write_csv(path, rows, delimiter=",", logger=None):
     header = [
         "PartnerNumber",
         "PartnerName",
@@ -325,10 +353,121 @@ def write_csv(path, rows, delimiter=","):
         "DueDate",
         "TotalNetAmountEUR",
     ]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f, delimiter=delimiter)
-        w.writerow(header)
-        w.writerows(rows)
+    try:
+        ensure_dir(os.path.dirname(path))
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f, delimiter=delimiter)
+            w.writerow(header)
+            w.writerows(rows)
+        if logger:
+            logger.info("csv written path=%s rows=%s", path, len(rows))
+    except Exception as e:
+        if logger:
+            logger.error("%s csv_write_failed path=%s err=%s", E_WRITE, path, e)
+        raise
+
+
+def _human_reason_from_exception(exc_text):
+    t = (exc_text or "").lower()
+    if "name resolution" in t or "failed to resolve" in t:
+        return "Network/DNS issue: host api.lexware.io could not be resolved"
+    if "timed out" in t or "timeout" in t:
+        return "Network timeout while calling Lexoffice API"
+    if "401" in t or "unauthorized" in t:
+        return "Authorization failed (token invalid/expired)"
+    if "403" in t or "forbidden" in t:
+        return "Access forbidden (token permissions/scopes)"
+    return "Unexpected error during execution"
+
+
+def build_email_report(status, error_code, log_file, out_csv, email_report_file, summary_lines, hint_items=None):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    subj_status = "SUCCESS" if status == "SUCCESS" else "FAILED"
+    subject = "[Lexoffice CSV B] %s (%s) %s" % (subj_status, error_code, ts)
+
+    lines = []
+    lines.append("Subject: %s" % subject)
+    lines.append("")
+    lines.append("Execution status: %s" % subj_status)
+    lines.append("Time: %s" % ts)
+    if log_file:
+        lines.append("LogFile: %s" % log_file)
+    if out_csv:
+        lines.append("Output: %s" % out_csv)
+    if email_report_file:
+        lines.append("EmailReport: %s" % email_report_file)
+
+    lines.append("Job: CSV B (Open Items: Receivables & Payables)")
+    lines.append("")
+    lines.append("Summary:")
+    for s in (summary_lines or []):
+        lines.append("- " + s)
+
+    if hint_items:
+        lines.append("")
+        lines.append("Hints:")
+        for h in hint_items[:10]:
+            lines.append("- " + h)
+
+    return "\n".join(lines)
+
+
+def _split_receivers(s):
+    s = (s or "").strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    return parts[:5]
+
+
+def _read_file_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def send_email_with_attachments(subject, body, sender, app_password, receivers, attachments, logger):
+    if not sender or not app_password or not receivers:
+        logger.info("email skipped (missing MAIL_ADDRESS/MAIL_APP_PASSWORD/EMAIL_TO)")
+        return False
+
+    if len(receivers) > 5:
+        receivers = receivers[:5]
+
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = ", ".join(receivers)
+    msg["Subject"] = subject
+    msg.set_content(body or "")
+
+    for path in (attachments or []):
+        if not path:
+            continue
+        if not os.path.isfile(path):
+            continue
+        filename = os.path.basename(path)
+        try:
+            data = _read_file_bytes(path)
+            maintype = "text"
+            subtype = "plain"
+            if filename.lower().endswith(".csv"):
+                maintype, subtype = "text", "csv"
+            elif filename.lower().endswith(".log") or filename.lower().endswith(".txt"):
+                maintype, subtype = "text", "plain"
+
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+        except Exception as e:
+            logger.warning("cannot attach file=%s err=%s", path, e)
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(sender, app_password)
+            server.send_message(msg)
+        logger.info("email sent to=%s attachments=%s", receivers, len(attachments or []))
+        return True
+    except Exception as e:
+        logger.error("email send failed err=%s", e)
+        return False
 
 
 def main():
@@ -336,52 +475,133 @@ def main():
 
     token = os.getenv("LEXOFFICE_TOKEN")
     if not token:
-        raise SystemExit("LEXOFFICE_TOKEN missing in .env")
+        raise SystemExit("%s LEXOFFICE_TOKEN missing in .env" % E_CONFIG)
 
     base_url = normalize_base(os.getenv("LEXOFFICE_BASE_URL"))
 
-    p = argparse.ArgumentParser(description="CSV B: Open Items (Receivables & Payables) via voucherlist")
+    p = argparse.ArgumentParser(description="CSV B: Open Items (Receivables & Payables)")
     p.add_argument("--out", default=None, help="output CSV path")
     p.add_argument("--delimiter", default=",", help="CSV delimiter (, or ;)")
     p.add_argument("--throttle", type=float, default=0.6, help="sleep seconds before each request")
-    p.add_argument("--log-dir", default="logs", help="directory for log files")
+    p.add_argument("--log-level", default="INFO", help="DEBUG/INFO/WARNING/ERROR")
+    p.add_argument("--log-file", default=None, help="path to log file; default logs/csv_b_YYYYmmdd_HHMMSS.log")
     args = p.parse_args()
 
-    logger, log_path = setup_logger("csv_b", log_dir=args.log_dir, level=logging.INFO)
+    # log file default
+    if not args.log_file:
+        ensure_dir("logs")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.log_file = os.path.join("logs", "csv_b_%s.log" % ts)
+
+    logger = setup_logger(args.log_file, level=args.log_level)
+
+    # email report always saved
+    ensure_dir("email")
+    ts_for_email = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    email_report_file = os.path.join("email", "csv_B_%s.txt" % ts_for_email)
 
     out = args.out
     if not out:
-        out = "csv_b_open_items.csv"
+        ensure_dir("csv")
+        out = os.path.join("csv", "csv_B_open_items.csv")
 
     logger.info("start csv_b out=%s base_url=%s", out, base_url)
 
     session = build_session(token)
 
-    # 1) open + sepadebit вместе (разрешено списком через запятую)
-    open_statuses = ["open", "sepadebit"]
-    voucher_types = ["invoice", "purchaseinvoice"]
-    v_open = fetch_voucherlist(session, base_url, logger, voucher_types, open_statuses, throttle=args.throttle)
+    # email config (optional)
+    mail_address = (os.getenv("MAIL_ADDRESS") or "").strip()
+    mail_app_password = (os.getenv("MAIL_APP_PASSWORD") or "").strip()
+    receivers = _split_receivers(os.getenv("EMAIL_TO") or "")
 
-    # 2) overdue отдельно (в доке указано, что overdue нельзя миксовать с другими статусами)
-    v_overdue = fetch_voucherlist(session, base_url, logger, voucher_types, ["overdue"], throttle=args.throttle)
+    try:
+        open_statuses = ["open", "sepadebit"]
+        voucher_types = ["invoice", "purchaseinvoice"]
+        v_open = fetch_voucherlist(session, base_url, logger, voucher_types, open_statuses, throttle=args.throttle)
 
-    combined = v_open + v_overdue
-    logger.info("voucherlist combined total=%s (open=%s overdue=%s)", len(combined), len(v_open), len(v_overdue))
+        v_overdue = fetch_voucherlist(session, base_url, logger, voucher_types, ["overdue"], throttle=args.throttle)
 
-    rows = build_csv_rows(session, base_url, logger, combined, throttle=args.throttle)
-    write_csv(out, rows, delimiter=args.delimiter)
+        combined = v_open + v_overdue
+        logger.info("voucherlist combined total=%s (open=%s overdue=%s)", len(combined), len(v_open), len(v_overdue))
 
-    logger.info("csv written path=%s rows=%s", out, len(rows))
-    logger.info("done ok rows=%s log=%s", len(rows), log_path)
+        rows = build_csv_rows(session, base_url, logger, combined, throttle=args.throttle)
+        write_csv(out, rows, delimiter=args.delimiter, logger=logger)
+
+        email_report = build_email_report(
+            status="SUCCESS",
+            error_code="OK",
+            log_file=args.log_file,
+            out_csv=out,
+            email_report_file=email_report_file,
+            summary_lines=[
+                "CSV generated successfully",
+                "Rows exported: %s" % len(rows),
+                "Included: open receivables + open payables + overdue",
+            ],
+            hint_items=None
+        )
+
+        write_text_file(email_report_file, email_report)
+        logger.info("email report written: %s", email_report_file)
+
+        print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
+
+        # send email (optional)
+        subject_line = (email_report.splitlines()[0].replace("Subject: ", "").strip() if email_report else "Lexoffice CSV B")
+        send_email_with_attachments(
+            subject=subject_line,
+            body=email_report,
+            sender=mail_address,
+            app_password=mail_app_password,
+            receivers=receivers,
+            attachments=[out, args.log_file],
+            logger=logger
+        )
+
+        logger.info("done ok out=%s rows=%s log=%s", out, len(rows), args.log_file)
+
+    except Exception as e:
+        logger.error("%s failure: %s", E_RUNTIME, e)
+
+        human_reason = _human_reason_from_exception(str(e))
+        hints = [
+            "If DNS/network: check server internet/DNS/proxy rules",
+            "Try again in 1-2 minutes (temporary network failures happen)",
+            "Check LEXOFFICE_TOKEN and LEXOFFICE_BASE_URL in .env",
+            "If rate limit: increase --throttle (e.g. 1.0) and retry",
+        ]
+
+        email_report = build_email_report(
+            status="FAILED",
+            error_code=E_RUNTIME,
+            log_file=args.log_file,
+            out_csv=out,
+            email_report_file=email_report_file,
+            summary_lines=[
+                human_reason,
+                "Technical: %s" % str(e),
+            ],
+            hint_items=hints
+        )
+
+        write_text_file(email_report_file, email_report)
+        logger.info("email report written: %s", email_report_file)
+
+        print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
+
+        subject_line = (email_report.splitlines()[0].replace("Subject: ", "").strip() if email_report else "Lexoffice CSV B FAILED")
+        send_email_with_attachments(
+            subject=subject_line,
+            body=email_report,
+            sender=mail_address,
+            app_password=mail_app_password,
+            receivers=receivers,
+            attachments=[args.log_file, email_report_file],
+            logger=logger
+        )
+
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
-    """
-    Пример:
-      python3 csv_b.py --out csvB_open_items.csv --delimiter "," --throttle 0.6
-
-    Требует .env:
-      LEXOFFICE_TOKEN=...
-      LEXOFFICE_BASE_URL=https://api.lexware.io   (можно не задавать, по умолчанию так)
-    """
     main()

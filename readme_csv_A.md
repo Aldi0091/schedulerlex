@@ -39,3 +39,11 @@ Logging and troubleshooting
 - Each HTTP error includes E_HTTP and url/status/body snippet.
 - Each runtime failure prints a ready-to-paste email block with an ErrorCode and logfile path.
 - For month runs, use --continue-on-error to skip a broken invoice and finish the export.
+
+
+## Commands
+
+### Run for previous month
+
+- python csv_a.py --month 2026-01 --out csv/csv_A_2026-01.csv
+
