@@ -80,6 +80,7 @@ docker-compose.override.yml
 *.iml
 *.swp
 *.swo
+*.txt
 
 # ==============================
 # OS
