@@ -216,7 +216,6 @@ CSV C SUCCESS
 Month: {args.month}
 Rows: {len(rows)}
 File: {out}
-Log: {log_path}
 """.strip() + "\n"
 
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")

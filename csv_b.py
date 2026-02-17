@@ -6,7 +6,7 @@ import re
 import unicodedata
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import requests
 from dotenv import load_dotenv
@@ -150,6 +150,25 @@ def parse_date_ddmmyyyy(value):
             return value
 
 
+def month_range(yyyy_mm):
+    y, m = yyyy_mm.split("-")
+    y = int(y)
+    m = int(m)
+    start = date(y, m, 1)
+    if m == 12:
+        end = date(y + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = date(y, m + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def previous_month_yyyy_mm(today=None):
+    d = today or date.today()
+    first = date(d.year, d.month, 1)
+    prev_last = first - timedelta(days=1)
+    return "%04d-%02d" % (prev_last.year, prev_last.month)
+
+
 def sanitize_partner_name(name):
     if not name:
         return ""
@@ -182,7 +201,8 @@ def pad5(n):
         return "00000"
 
 
-def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses, throttle, size=250):
+def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses, throttle, size=250,
+                     voucher_date_from=None, voucher_date_to=None):
     url = base_url + "/v1/voucherlist"
     params = {
         "voucherType": ",".join(voucher_types),
@@ -190,6 +210,12 @@ def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses
         "size": int(size),
         "page": 0,
     }
+
+    # monthly filter (optional)
+    if voucher_date_from:
+        params["voucherDateFrom"] = voucher_date_from
+    if voucher_date_to:
+        params["voucherDateTo"] = voucher_date_to
 
     all_rows = []
     while True:
@@ -201,8 +227,9 @@ def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses
         content = data.get("content") or []
         all_rows.extend(content)
 
-        logger.info("voucherlist page=%s got=%s total_so_far=%s types=%s status=%s",
-                    params["page"], len(content), len(all_rows), params["voucherType"], params["voucherStatus"])
+        logger.info("voucherlist page=%s got=%s total=%s types=%s status=%s dateFrom=%s dateTo=%s",
+                    params["page"], len(content), len(all_rows), params["voucherType"], params["voucherStatus"],
+                    params.get("voucherDateFrom"), params.get("voucherDateTo"))
 
         if len(content) < int(params["size"]):
             break
@@ -364,20 +391,7 @@ def write_csv(path, rows, delimiter=",", logger=None):
         raise
 
 
-def _human_reason_from_exception(exc_text):
-    t = (exc_text or "").lower()
-    if "name resolution" in t or "failed to resolve" in t:
-        return "Network/DNS issue: host api.lexware.io could not be resolved"
-    if "timed out" in t or "timeout" in t:
-        return "Network timeout while calling Lexoffice API"
-    if "401" in t or "unauthorized" in t:
-        return "Authorization failed (token invalid/expired)"
-    if "403" in t or "forbidden" in t:
-        return "Access forbidden (token permissions/scopes)"
-    return "Unexpected error during execution"
-
-
-def build_email_report(status, error_code, log_file, out_csv, email_report_file, summary_lines, hint_items=None):
+def build_email_report(status, error_code, log_file, out_csv, email_report_file, month, summary_lines, hint_items=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     subj_status = "SUCCESS" if status == "SUCCESS" else "FAILED"
     subject = "[Lexoffice CSV B] %s (%s) %s" % (subj_status, error_code, ts)
@@ -387,6 +401,8 @@ def build_email_report(status, error_code, log_file, out_csv, email_report_file,
     lines.append("")
     lines.append("Execution status: %s" % subj_status)
     lines.append("Time: %s" % ts)
+    if month:
+        lines.append("Period: %s" % month)
     if log_file:
         lines.append("LogFile: %s" % log_file)
     if out_csv:
@@ -394,7 +410,7 @@ def build_email_report(status, error_code, log_file, out_csv, email_report_file,
     if email_report_file:
         lines.append("EmailReport: %s" % email_report_file)
 
-    lines.append("Job: CSV B (Open Items: Receivables & Payables)")
+    lines.append("Job: CSV B (Open Items: Receivables & Payables) [MONTH-FILTERED]")
     lines.append("")
     lines.append("Summary:")
     for s in (summary_lines or []):
@@ -418,7 +434,8 @@ def main():
 
     base_url = normalize_base(os.getenv("LEXOFFICE_BASE_URL"))
 
-    p = argparse.ArgumentParser(description="CSV B: Open Items (Receivables & Payables)")
+    p = argparse.ArgumentParser(description="CSV B: Open Items (Receivables & Payables) - monthly filter")
+    p.add_argument("--month", default=None, help="YYYY-MM (default: previous month)")
     p.add_argument("--out", default=None, help="output CSV path")
     p.add_argument("--delimiter", default=",", help="CSV delimiter (, or ;)")
     p.add_argument("--throttle", type=float, default=0.6, help="sleep seconds before each request")
@@ -426,7 +443,12 @@ def main():
     p.add_argument("--log-file", default=None, help="path to log file; default logs/csv_b_YYYYmmdd_HHMMSS.log")
     args = p.parse_args()
 
-    # log file default
+    month = args.month or previous_month_yyyy_mm()
+
+    start, end = month_range(month)
+    voucher_date_from = start.isoformat()
+    voucher_date_to = end.isoformat()
+
     if not args.log_file:
         ensure_dir("logs")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -434,7 +456,6 @@ def main():
 
     logger = setup_logger(args.log_file, level=args.log_level)
 
-    # email report always saved
     ensure_dir("email")
     ts_for_email = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     email_report_file = os.path.join("email", "csv_B_%s.txt" % ts_for_email)
@@ -442,19 +463,25 @@ def main():
     out = args.out
     if not out:
         ensure_dir("csv")
-        ts_csv = datetime.now().strftime("%Y-%m-%d")
-        out = os.path.join("csv", "csv_B_open_items_%s.csv" % ts_csv)
+        out = os.path.join("csv", "csv_B_open_items_%s.csv" % month)
 
-    logger.info("start csv_b out=%s base_url=%s", out, base_url)
+    logger.info("start csv_b month=%s out=%s base_url=%s dateFrom=%s dateTo=%s",
+                month, out, base_url, voucher_date_from, voucher_date_to)
 
     session = build_session(token)
 
     try:
         open_statuses = ["open", "sepadebit"]
         voucher_types = ["invoice", "purchaseinvoice"]
-        v_open = fetch_voucherlist(session, base_url, logger, voucher_types, open_statuses, throttle=args.throttle)
 
-        v_overdue = fetch_voucherlist(session, base_url, logger, voucher_types, ["overdue"], throttle=args.throttle)
+        v_open = fetch_voucherlist(
+            session, base_url, logger, voucher_types, open_statuses,
+            throttle=args.throttle, voucher_date_from=voucher_date_from, voucher_date_to=voucher_date_to
+        )
+        v_overdue = fetch_voucherlist(
+            session, base_url, logger, voucher_types, ["overdue"],
+            throttle=args.throttle, voucher_date_from=voucher_date_from, voucher_date_to=voucher_date_to
+        )
 
         combined = v_open + v_overdue
         logger.info("voucherlist combined total=%s (open=%s overdue=%s)", len(combined), len(v_open), len(v_overdue))
@@ -468,10 +495,12 @@ def main():
             log_file=args.log_file,
             out_csv=out,
             email_report_file=email_report_file,
+            month=month,
             summary_lines=[
                 "CSV generated successfully",
                 "Rows exported: %s" % len(rows),
-                "Included: open receivables + open payables + overdue",
+                "Filter: voucherDateFrom=%s voucherDateTo=%s" % (voucher_date_from, voucher_date_to),
+                "Included: open receivables + open payables + overdue (within month)",
             ],
             hint_items=None
         )
@@ -480,13 +509,11 @@ def main():
         logger.info("email report written: %s", email_report_file)
 
         print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
-
         logger.info("done ok out=%s rows=%s log=%s", out, len(rows), args.log_file)
 
     except Exception as e:
         logger.error("%s failure: %s", E_RUNTIME, e)
 
-        human_reason = _human_reason_from_exception(str(e))
         hints = [
             "If DNS/network: check server internet/DNS/proxy rules",
             "Try again in 1-2 minutes (temporary network failures happen)",
@@ -500,8 +527,8 @@ def main():
             log_file=args.log_file,
             out_csv=out,
             email_report_file=email_report_file,
+            month=month,
             summary_lines=[
-                human_reason,
                 "Technical: %s" % str(e),
             ],
             hint_items=hints
@@ -511,7 +538,6 @@ def main():
         logger.info("email report written: %s", email_report_file)
 
         print("\n" + "=" * 60 + "\n" + email_report + "\n" + "=" * 60 + "\n")
-
         raise SystemExit(2)
 
 

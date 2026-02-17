@@ -2,7 +2,8 @@
 
 ## Run Command
 
-- python3 csv_b.py --out csv/csv_B_open_items.csv
+- python3 csv_b.py --month 2026-01
+
 
 # CSV B Export Script --- Open Items (Receivables & Payables)
 
