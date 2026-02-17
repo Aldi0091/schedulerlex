@@ -1,0 +1,49 @@
+default_category: Unmapped
+
+categories:
+  - name: Rental
+    label: "VERMIETUNG"
+    keywords:
+      - "miete"
+      - "vermietung"
+      - "rental"
+
+  - name: Sales
+    label: "VERKAUF"
+    keywords:
+      - "gebraucht"
+      - "neuwertig"
+      - "fabrikneu"
+      - "verkauf"
+      - "sale"
+      - "used"
+
+  - name: Transport
+    label: "TRANSPORT"
+    keywords:
+      - "transport"
+      - "anlieferung"
+      - "rücktransport"
+      - "rucktransport"
+      - "crane"
+      - "kran"
+      - "truck"
+      - "lkw"
+
+  - name: Storage
+    label: "STORAGE"
+    keywords:
+      - "selfstorage"
+      - "self storage"
+      - "lager"
+      - "lagerung"
+      - "storage"
+
+  - name: Additional charges
+    label: "Nebenkosten"
+    keywords:
+      - "nebenkosten"
+      - "service"
+      - "additional charge"
+      - "zusatz"
+      - "zuschlag"
