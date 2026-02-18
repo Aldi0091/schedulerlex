@@ -14,6 +14,12 @@ Run once to confirm everything is configured:
 
 If this works, cron will work.
 
+Additionally, if need to check generated csv & verify amounts to run without sending email & purging files:
+```
+SEND_EMAIL_AFTER=0 PURGE_AFTER=0 ./lex_job.sh
+```
+
+
 ---
 
 ## Step 2 — Get absolute path

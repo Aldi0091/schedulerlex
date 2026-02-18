@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # Always run from this script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +17,9 @@ PIP_INSTALL_ALWAYS="${PIP_INSTALL_ALWAYS:-0}"   # 0 = only first time, 1 = pip i
 PURGE_AFTER="${PURGE_AFTER:-1}"                 # 1 = run purge.py, 0 = skip purge
 SEND_EMAIL_AFTER="${SEND_EMAIL_AFTER:-1}"       # 1 = run send_email.py, 0 = skip send_email
 # -----------------------------------------------
+
+FAILURES=()
+OVERALL_RC=0
 
 # Basic checks
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "ERROR: python3 not found"; exit 1; }
@@ -69,34 +72,81 @@ run_step () {
   echo
   echo "---- $name ----"
   echo "+ $*"
+
+  set +e
   "$@"
-  echo "---- $name DONE ----"
+  local rc=$?
+  set -e
+
+  if [[ $rc -ne 0 ]]; then
+    echo "---- $name FAILED (rc=$rc) ----"
+    FAILURES+=("$name (rc=$rc)")
+    OVERALL_RC=1
+  else
+    echo "---- $name DONE ----"
+  fi
+
+  return 0
 }
 
 # Create dirs (safe)
 mkdir -p csv logs email
 
-# Run CSV scripts
+# Run CSV scripts (do not stop on failure)
 run_step "CSV A" python csv_a.py
 run_step "CSV B" python csv_b.py
 run_step "CSV C" python csv_c.py
 
-# Send email
+EMAIL_SENT_OK=0
+
+# Send email (always attempt if enabled)
 if [[ "$SEND_EMAIL_AFTER" == "1" ]]; then
-  run_step "SEND EMAIL" python send_email.py
+  echo
+  echo "---- SEND EMAIL ----"
+  echo "+ python send_email.py"
+
+  set +e
+  python send_email.py
+  rc=$?
+  set -e
+
+  if [[ $rc -ne 0 ]]; then
+    echo "---- SEND EMAIL FAILED (rc=$rc) ----"
+    FAILURES+=("SEND EMAIL (rc=$rc)")
+    OVERALL_RC=1
+    EMAIL_SENT_OK=0
+  else
+    echo "---- SEND EMAIL DONE ----"
+    EMAIL_SENT_OK=1
+  fi
 else
   echo
   echo "[skip] send_email.py (SEND_EMAIL_AFTER=0)"
 fi
 
-# Purge
+# Purge (only after email was sent successfully)
 if [[ "$PURGE_AFTER" == "1" ]]; then
-  run_step "PURGE" python purge.py
+  if [[ "$SEND_EMAIL_AFTER" == "1" && "$EMAIL_SENT_OK" == "1" ]]; then
+    run_step "PURGE" python purge.py
+  else
+    echo
+    echo "[skip] purge.py (purge runs only after successful email send)"
+  fi
 else
   echo
   echo "[skip] purge.py (PURGE_AFTER=0)"
 fi
 
 echo
-echo "== All done =="
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+  echo "== Completed with failures =="
+  for f in "${FAILURES[@]}"; do
+    echo "- $f"
+  done
+else
+  echo "== All done =="
+fi
+
 echo "Time: $(date '+%Y-%m-%d %H:%M:%S')"
+
+exit $OVERALL_RC
