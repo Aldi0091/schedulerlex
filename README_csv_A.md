@@ -57,10 +57,12 @@ Example:
 ```yaml
 default_category: Unmapped
 categories:
-  - name: Sales
-    keywords: ["sale", "product", "artikel"]
-  - name: Transport
-    keywords: ["transport", "delivery", "/^ship(ping)?/"]
+  - name: Rental
+    label: "VERMIETUNG"
+    keywords:
+      - "miete"
+      - "vermietung"
+      - "rental"
 ```
 
 ---
