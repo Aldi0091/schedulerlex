@@ -437,8 +437,6 @@ def build_email_report(status, error_code, log_file, args, summary_lines, hint_i
     lines.append("")
     lines.append("Execution status: %s" % subj_status)
     lines.append("Time: %s" % ts)
-    if log_file:
-        lines.append("LogFile: %s" % log_file)
 
     if args:
         lines.append("Job: CSV A (Revenue by Invoice and Category)")
@@ -446,10 +444,6 @@ def build_email_report(status, error_code, log_file, args, summary_lines, hint_i
             lines.append("Period: %s" % args.month)
         if getattr(args, "invoice_id", None):
             lines.append("InvoiceId: %s" % args.invoice_id)
-        if getattr(args, "out", None):
-            lines.append("Output: %s" % args.out)
-        if getattr(args, "mapping", None):
-            lines.append("Mapping: %s" % args.mapping)
 
     lines.append("")
     lines.append("Summary:")

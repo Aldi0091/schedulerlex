@@ -403,12 +403,6 @@ def build_email_report(status, error_code, log_file, out_csv, email_report_file,
     lines.append("Time: %s" % ts)
     if month:
         lines.append("Period: %s" % month)
-    if log_file:
-        lines.append("LogFile: %s" % log_file)
-    if out_csv:
-        lines.append("Output: %s" % out_csv)
-    if email_report_file:
-        lines.append("EmailReport: %s" % email_report_file)
 
     lines.append("Job: CSV B (Open Items: Receivables & Payables) [MONTH-FILTERED]")
     lines.append("")
