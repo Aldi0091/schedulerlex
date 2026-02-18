@@ -108,27 +108,8 @@ Add this line (runs at **08:00** on day **1** of every month):
 ```
 
 Replace `/ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR` with your real path.
+Once the cronjob is set, the bash script will produce csv files, logs and sends an email.
 
-### 2) Verify cron environment
-Cron runs with a minimal environment. The script:
-- `cd`s into its own folder ✅
-- activates the venv ✅
-- reads `.env` from that folder ✅
-
-So you normally do not need extra `cd` or exporting variables.
-
-### 3) Test cron-like run (recommended)
-Run the exact cron command in your shell:
-```bash
-/bin/bash /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/lex_job.sh >> /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/cron.log 2>&1
-```
-
-Then check:
-```bash
-tail -n 200 /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/cron.log
-ls -la /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/csv
-ls -la /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/email
-```
 
 ---
 
