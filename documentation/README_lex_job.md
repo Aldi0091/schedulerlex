@@ -4,8 +4,8 @@
 1) prepares/activates the Python virtualenv  
 2) installs dependencies (first run only, unless forced)  
 3) runs CSV exports **A**, **B**, **C**  
-4) optionally sends email (`send_email.py`)  
-5) optionally purges old files (`purge.py`)
+4) sends email (`send_email.py`)  
+5) purges old files (`purge.py`)
 
 ---
 
@@ -15,8 +15,8 @@ In order:
 - `python csv_a.py` (CSV A: Revenue by Invoice & Category)
 - `python csv_b.py` (CSV B: Open Items)
 - `python csv_c.py` (CSV C: Article Revenue)
-- `python send_email.py` (optional)
-- `python purge.py` (optional)
+- `python send_email.py`
+- `python purge.py`
 
 It always runs from its own directory (so relative paths like `csv/`, `logs/`, `email/` work).
 
@@ -104,10 +104,10 @@ crontab -e
 
 Add this line (runs at **08:00** on day **1** of every month):
 ```cron
-0 8 1 * * /bin/bash /ABSOLUTE/PATH/TO/lexoffice/scheduler/lex_job.sh >> /ABSOLUTE/PATH/TO/lexoffice/scheduler/cron.log 2>&1
+0 8 1 * * /bin/bash /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/lex_job.sh >> /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/cron.log 2>&1
 ```
 
-Replace `/ABSOLUTE/PATH/TO/...` with your real path.
+Replace `/ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR` with your real path.
 
 ### 2) Verify cron environment
 Cron runs with a minimal environment. The script:
@@ -120,14 +120,14 @@ So you normally do not need extra `cd` or exporting variables.
 ### 3) Test cron-like run (recommended)
 Run the exact cron command in your shell:
 ```bash
-/bin/bash /ABSOLUTE/PATH/TO/lexoffice/scheduler/lex_job.sh >> /ABSOLUTE/PATH/TO/lexoffice/scheduler/cron.log 2>&1
+/bin/bash /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/lex_job.sh >> /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/cron.log 2>&1
 ```
 
 Then check:
 ```bash
-tail -n 200 /ABSOLUTE/PATH/TO/lexoffice/scheduler/cron.log
-ls -la /ABSOLUTE/PATH/TO/lexoffice/scheduler/csv
-ls -la /ABSOLUTE/PATH/TO/lexoffice/scheduler/email
+tail -n 200 /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/cron.log
+ls -la /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/csv
+ls -la /ABSOLUTE/PATH/TO/YOUR-SCHEDULER-DIR/email
 ```
 
 ---
