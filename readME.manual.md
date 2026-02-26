@@ -16,34 +16,49 @@ Check Python in PowerShell:
 
 ------------------------------------------------------------------------
 
-## 2. Configure .env
+## 2. Download & Configure Credentials
 
-Open `.env` in the project root and set:
+1. Download and unpack `lexofficemonthlyreport.zip`
+
+2. Once you unpack, then open `.env` file apply/override your working credentials for **LexOffice API & SMTP Email** configurations
 
 ```
 LEXOFFICE_TOKEN=your_lexoffice_public_api_token
+```
 
+```
 MAIL_ADDRESS=sender@example.com
 MAIL_APP_PASSWORD=your_smtp_password_or_app_password
-EMAIL_TO=receiver@example.com
+EMAIL_TO=receiver1@example.com,receiver2@example.com
 
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 ```
 
-Save the file.
+---
 
-------------------------------------------------------------------------
+## 3. Setup Python Requirements
 
-## 3. Prepare Python Environment (one-time setup)
 
-Open PowerShell inside the project folder and run:
+1. Right click our unpacked folder `lexofficemonthlyreport` and click `Open in Terminal`
 
-    python -m venv venv
-    .\venv\Scripts\python -m pip install --upgrade pip
-    .\venv\Scripts\pip install -r requirements.txt
+2. There in Terminal need to create virtual environment for python
 
-------------------------------------------------------------------------
+```
+python -m venv venv
+```
+
+Run this:
+
+```
+.\venv\Scripts\python -m pip install --upgrade pip
+
+```
+and then:
+```
+.\venv\Scripts\pip install -r requirements.txt
+```
+
 
 ## 4. Run Manually
 
