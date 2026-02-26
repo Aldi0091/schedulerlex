@@ -1,131 +1,95 @@
-# Quick Setup — Run Monthly Reports Automatically (Cron)
-
-This guide explains how to schedule automatic monthly execution of `lex_job.sh` so reports are generated and emailed.
+## Quick Setup — Run Monthly Reports (Windows Task Manager)
 
 ---
 
-## Step 1 — Verify script works manually
+### Get started
 
-Run once to confirm everything is configured:
+1. Download and unpack `lexofficemonthlyreport.zip` file with scripts to any desired folder (Ensure that you captured **the absolute path** to working directory, as it will be needed for scheduler in below instructions)
 
-```bash
-./lex_job.sh
+2. Once you unpack, then open `.env` file apply/override your working credentials for **LexOffice API & SMTP Email** configurations
+
+```
+LEXOFFICE_TOKEN=your_lexoffice_public_api_token
 ```
 
-If this works, cron will work.
-
-Additionally, if need to check generated csv & verify amounts to run without sending email & purging files:
 ```
-SEND_EMAIL_AFTER=0 PURGE_AFTER=0 ./lex_job.sh
-```
+MAIL_ADDRESS=sender@example.com
+MAIL_APP_PASSWORD=your_smtp_password_or_app_password
+EMAIL_TO=receiver1@example.com,receiver2@example.com
 
-
----
-
-## Step 2 — Get absolute path
-
-Find full path of script directory:
-
-```bash
-pwd
-```
-
-Example result:
-```
-/home/user/lexoffice/scheduler
-```
-
-Script path will be:
-```
-/home/user/lexoffice/scheduler/lex_job.sh
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
 ```
 
 ---
 
-## Step 3 — Make script executable
+### Setup Python
 
-```bash
-chmod +x lex_job.sh
+
+1. Right click our unpacked folder `lexofficemonthlyreport` and click `Open in Terminal`
+
+2. There in Terminal need to create virtual environment for python
+
+```
+python -m venv venv
 ```
 
----
+Run this:
 
-## Step 4 — Open cron editor
+```
+.\venv\Scripts\python -m pip install --upgrade pip
 
-```bash
-crontab -e
+```
+and then:
+```
+.\venv\Scripts\pip install -r requirements.txt
 ```
 
+Once virtual python environment created & set up, we proceed next step.
+
 ---
 
-## Step 5 — Add monthly job
+### Configure a scheduled job in Windows Task Manager
 
-Run on **1st day of every month at 08:00**:
+Go to:
 
-```cron
-0 8 1 * * /bin/bash /FULL/PATH/TO/lex_job.sh >> /FULL/PATH/TO/cron.log 2>&1
+```
+Win + R
 ```
 
-Replace `/FULL/PATH/TO/` with your actual path.
+and enter:
 
-Example:
-```cron
-0 8 1 * * /bin/bash /home/user/lexoffice/scheduler/lex_job.sh >> /home/user/lexoffice/scheduler/cron.log 2>&1
+```
+control schedtasks
 ```
 
----
+Once Task Manager is opened, follow:
+1. Create a Task
+2. Assign a name for a task, for example: `Lexoffice Monthly Report`
+3. Go to `Trigger` and set your schedule, for example: `Monthly, 1st day, 08:00 AM`
+4. Go to `Actions` and create a `Start a Program`
 
-## What happens automatically
+    a. Click `Browse` and paste *path* of our `venv` interpreter, e.g.:
 
-On the 1st of each month:
+        C:\<Absolute-Path>\lexofficemonthlyreport\venv\Scripts\python.exe
 
-1. Script runs
-2. Previous month invoices are exported
-3. CSV A / B / C are generated
-4. Email is sent
-5. Old files are cleaned (if enabled)
+        
+    a.1. or something like:
 
-No manual action required.
+        C:\Users\Frank\Downloads\lexofficemonthlyreport\venv\Scripts\python.exe
 
----
+    b. Then add an `argument` and paste `run_monthly.py` there
 
-## Check logs
+    c. **Critical**: paste to the `Start In` this (its required to pick `.env` credentials):
 
-If needed, check execution log:
+        C:\<Absolute-Path>\lexofficemonthlyreport
+    
+    c.1.: or its something like:
 
-```bash
-tail -n 200 cron.log
-```
+        C:\Users\Frank\Downloads\lexofficemonthlyreport
 
----
+    d. Click OK.
 
-## Common issues
+Finished. Scheduler is configured.
 
-**Nothing happens**
-→ cron not running or wrong path
 
-Check:
-```bash
-systemctl status cron
-```
-
----
-
-**Permission denied**
-→ script not executable
-
-Fix:
-```bash
-chmod +x lex_job.sh
-```
-
----
-
-**Email not sent**
-→ verify `.env` credentials
-
----
-
-## Done
-
-Once cron entry is saved, reports run automatically every month.
