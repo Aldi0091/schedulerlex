@@ -1,4 +1,4 @@
-## Quick Setup — Run Monthly Reports (Windows Task Manager)
+## Quick Setup — Run Monthly Reports (Windows Task Scheduler)
 
 ---
 
@@ -49,7 +49,7 @@ Once virtual python environment created & set up, we proceed next step.
 
 ---
 
-### Configure a scheduled job in Windows Task Manager
+### Configure a scheduled job in Windows Task Scheduler
 
 Go to:
 
@@ -63,7 +63,7 @@ and enter:
 control schedtasks
 ```
 
-Once Task Manager is opened, follow:
+Once Windows Task Scheduler is opened, follow:
 1. Create a Task
 2. Assign a name for a task, for example: `Lexoffice Monthly Report`
 3. Go to `Trigger` and set your schedule, for example: `Monthly, 1st day, 08:00 AM`
