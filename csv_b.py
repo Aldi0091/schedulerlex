@@ -189,9 +189,12 @@ def sanitize_partner_name(name):
 
 def format_amount(x):
     try:
-        return f"{float(x):.2f}"
+        val = float(x)
+        s = f"{val:,.2f}"        # 123,456.78
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return s                 # 123.456,78
     except Exception:
-        return "0.00"
+        return "0,00"
 
 
 def pad5(n):
@@ -359,6 +362,7 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
             invoice_id,
             creation_date,
             due_date,
+            kind.capitalize(),
             format_amount(total_net),
         ])
 
@@ -375,6 +379,7 @@ def write_csv(path, rows, delimiter=",", logger=None):
         "InvoiceID",
         "CreationDate",
         "DueDate",
+        "ReceivableOrPayable",
         "TotalNetAmountEUR",
     ]
     try:
@@ -431,7 +436,7 @@ def main():
     p = argparse.ArgumentParser(description="CSV B: Open Items (Receivables & Payables) - monthly filter")
     p.add_argument("--month", default=None, help="YYYY-MM (default: previous month)")
     p.add_argument("--out", default=None, help="output CSV path")
-    p.add_argument("--delimiter", default=",", help="CSV delimiter (, or ;)")
+    p.add_argument("--delimiter", default=";", help="CSV delimiter (; recommended for German Excel)")
     p.add_argument("--throttle", type=float, default=0.6, help="sleep seconds before each request")
     p.add_argument("--log-level", default="INFO", help="DEBUG/INFO/WARNING/ERROR")
     p.add_argument("--log-file", default=None, help="path to log file; default logs/csv_b_YYYYmmdd_HHMMSS.log")
@@ -478,6 +483,16 @@ def main():
         )
 
         combined = v_open + v_overdue
+        seen = set()
+        unique = []
+
+        for v in combined:
+            vid = v.get("id")
+            if vid and vid not in seen:
+                seen.add(vid)
+                unique.append(v)
+
+        combined = unique
         logger.info("voucherlist combined total=%s (open=%s overdue=%s)", len(combined), len(v_open), len(v_overdue))
 
         rows = build_csv_rows(session, base_url, logger, combined, throttle=args.throttle)

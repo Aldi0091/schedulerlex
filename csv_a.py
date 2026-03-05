@@ -304,9 +304,12 @@ def extract_invoice_fields(inv):
 
 def format_amount(x):
     try:
-        return f"{float(x):.2f}"
+        val = float(x)
+        s = f"{val:,.2f}"          # 123,456.78
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return s                   # 123.456,78
     except Exception:
-        return "0.00"
+        return "0,00"
 
 
 def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
@@ -338,13 +341,27 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
             format_amount(grouped[cat]),
         ])
 
-    total = invoice_total_net(inv)
+    line_sum = sum(grouped.values())
+    invoice_total = invoice_total_net(inv)
+
+    diff = invoice_total - line_sum
+
+    # Add rebate / adjustment row if there is a meaningful difference
+    if abs(diff) > 0.01:
+        rows.append([
+            invoice_number,
+            invoice_date,
+            customer_name,
+            "Rebate / Adjustment",
+            format_amount(diff),
+        ])
+
     rows.append([
         invoice_number,
         invoice_date,
         customer_name,
         "TotalInvoice",
-        format_amount(total),
+        format_amount(invoice_total),
     ])
 
     logger.info("invoice processed invoiceNumber=%s invoiceId=%s rows=%s", invoice_number, inv_id, len(rows))
@@ -467,7 +484,7 @@ def main():
     p.add_argument("--invoice-id", default=None, help="single invoice id")
     p.add_argument("--month", default=None, help="YYYY-MM to export all invoices in that month")
     p.add_argument("--out", default=None, help="output CSV path (default: csv/csv_A_YYYY-MM.csv)")
-    p.add_argument("--delimiter", default=",", help="CSV delimiter (default , ; also possible)")
+    p.add_argument("--delimiter", default=";", help="CSV delimiter (default ;)")
     p.add_argument("--throttle", type=float, default=0.6, help="sleep seconds before each request")
     p.add_argument("--log-level", default="INFO", help="DEBUG/INFO/WARNING/ERROR")
     p.add_argument("--log-file", default=None, help="path to log file; default logs/csv_a_YYYYmmdd_HHMMSS.log")

@@ -15,6 +15,17 @@ DEFAULT_TIMEOUT = 30
 # =========================
 # helpers
 # =========================
+NO_ARTICLE_NUMBER = "No Number"
+NO_ARTICLE_NAME = "Other"
+
+def format_amount(x):
+    try:
+        val = float(x)
+        s = f"{val:,.2f}"                 # 123,456.78
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return s                          # 123.456,78
+    except Exception:
+        return "0,00"
 
 def ensure_dir(path):
     if path:
@@ -184,19 +195,26 @@ def main():
                 continue
 
             article_id = it.get("id")
-            if not looks_like_uuid(article_id):
-                continue
 
-            if article_id not in article_cache:
-                art = request_json(session, f"{base}/v1/articles/{article_id}", logger)["data"]
-                article_cache[article_id] = (
-                    art.get("articleNumber"),
-                    art.get("title"),
-                )
+            if looks_like_uuid(article_id):
 
-            num, name = article_cache[article_id]
-            if not num:
-                continue
+                if article_id not in article_cache:
+                    art = request_json(session, f"{base}/v1/articles/{article_id}", logger)["data"]
+                    article_cache[article_id] = (
+                        art.get("articleNumber"),
+                        art.get("title"),
+                    )
+
+                num, name = article_cache[article_id]
+
+                if not num:
+                    num = NO_ARTICLE_NUMBER
+                if not name:
+                    name = NO_ARTICLE_NAME
+
+            else:
+                num = NO_ARTICLE_NUMBER
+                name = NO_ARTICLE_NAME
 
             key = (num, name)
             agg[key] = agg.get(key, 0) + net_from_item(it)
@@ -204,10 +222,10 @@ def main():
         if idx % 10 == 0:
             logger.info("processed %s/%s", idx, len(ids))
 
-    rows = [[k[0], k[1], f"{v:.2f}"] for k, v in sorted(agg.items())]
+    rows = [[k[0], k[1], format_amount(v)] for k, v in sorted(agg.items())]
 
     with open(out, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
+        w = csv.writer(f, delimiter=";")
         w.writerow(["ArticleNumber", "ArticleName", "NetRevenueEUR"])
         w.writerows(rows)
 
