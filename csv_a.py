@@ -17,9 +17,8 @@ from abstract import (
     ensure_dir, write_text_file, prev_month_yyyy_mm, month_range, parse_date_ddmmyyyy,
     normalize_base, build_session, request_json,
     E_CONFIG, E_HTTP, E_SCHEMA, E_MAPPING, E_WRITE, E_RUNTIME,
-    format_amount, 
+    format_amount, fetch_contact_number,
 )
-
 
 def default_out_path_for_month(yyyy_mm, base_dir="csv"):
     ensure_dir(base_dir)
@@ -190,7 +189,7 @@ def extract_invoice_fields(inv):
 
 
 
-def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
+def build_rows_for_invoice(inv, mapping, logger, session, base_url, contact_cache, throttle, log_unmapped=False):
     """
         Main row builder method:
         - intale RAW data;
@@ -200,6 +199,14 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
     invoice_number, invoice_date, customer_id, customer_name = extract_invoice_fields(inv)
     inv_id = inv.get("id") or ""
 
+    customer_number = fetch_contact_number(
+        session,
+        base_url,
+        logger,
+        customer_id,
+        contact_cache,
+        throttle,
+    )
     grouped = {}
     unmapped_titles = []
 
@@ -220,7 +227,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
         rows.append([
             invoice_number,
             invoice_date,
-            customer_id,
+            customer_number,
             customer_name,
             cat,
             format_amount(grouped[cat]),
@@ -236,7 +243,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
         rows.append([
             invoice_number,
             invoice_date,
-            customer_id,
+            customer_number,
             customer_name,
             "Rebate / Adjustment",
             format_amount(diff),
@@ -245,7 +252,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
     rows.append([
         invoice_number,
         invoice_date,
-        customer_id,
+        customer_number,
         customer_name,
         "TotalInvoice",
         format_amount(invoice_total),
@@ -303,7 +310,7 @@ def fetch_invoice_ids_for_month(session, base_url, yyyy_mm, throttle, logger):
 
 
 def write_csv(path, rows, delimiter=",", logger=None):
-    header = ["InvoiceNumber", "Date", "CustomerId", "Customer", "Category", "AmountEUR"]
+    header = ["InvoiceNumber", "Date", "CustomerNumber", "Customer", "Category", "AmountEUR"]
     try:
         ensure_dir(os.path.dirname(path))
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -414,6 +421,7 @@ def main():
 
     all_rows = []
     failures = []
+    contact_cache = {}
 
     email_report = None
 
@@ -421,7 +429,18 @@ def main():
         if args.invoice_id:
             logger.info("fetching single invoice id=%s", args.invoice_id)
             inv = fetch_invoice(session, base_url, args.invoice_id, args.throttle, logger)
-            all_rows.extend(build_rows_for_invoice(inv, mapping, logger, log_unmapped=args.log_unmapped))
+            all_rows.extend(
+                build_rows_for_invoice(
+                    inv,
+                    mapping,
+                    logger,
+                    session,
+                    base_url,
+                    contact_cache,
+                    args.throttle,
+                    log_unmapped=args.log_unmapped,
+                )
+            )
 
         if args.month:
             logger.info("fetching invoices for month=%s", args.month)
@@ -438,7 +457,18 @@ def main():
                         base_url,
                         compact_json(inv),
                     )
-                    all_rows.extend(build_rows_for_invoice(inv, mapping, logger, log_unmapped=args.log_unmapped))
+                    all_rows.extend(
+                            build_rows_for_invoice(
+                            inv,
+                            mapping,
+                            logger,
+                            session,
+                            base_url,
+                            contact_cache,
+                            args.throttle,
+                            log_unmapped=args.log_unmapped,
+                        )
+                    )
                 except Exception as e:
                     msg = "%s invoice_failed id=%s err=%s" % (E_RUNTIME, invoice_id, e)
                     logger.error(msg)

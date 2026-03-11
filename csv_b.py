@@ -5,7 +5,7 @@ import re
 import unicodedata
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, date
 
 from dotenv import load_dotenv
 
@@ -67,7 +67,6 @@ def sanitize_partner_name(name):
     return s
 
 
-
 def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses, throttle, size=250,
                      voucher_date_from=None, voucher_date_to=None):
     url = base_url + "/v1/voucherlist"
@@ -78,7 +77,7 @@ def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses
         "page": 0,
     }
 
-    # monthly filter (optional)
+    # NOTE optional upper-bound filter for month-end snapshot
     if voucher_date_from:
         params["voucherDateFrom"] = voucher_date_from
     if voucher_date_to:
@@ -93,10 +92,6 @@ def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses
         data = resp["data"] or {}
         content = data.get("content") or []
         all_rows.extend(content)
-
-        logger.info("voucherlist page=%s got=%s total=%s types=%s status=%s dateFrom=%s dateTo=%s",
-                    params["page"], len(content), len(all_rows), params["voucherType"], params["voucherStatus"],
-                    params.get("voucherDateFrom"), params.get("voucherDateTo"))
 
         if len(content) < int(params["size"]):
             break
@@ -220,6 +215,8 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
                            v.get("voucherType"), v.get("id"), v.get("voucherNumber"))
             total_net = 0.0
 
+        signed_total_net = -abs(total_net) if kind == "payable" else abs(total_net)
+
         rows.append([
             partner_number,
             partner_name,
@@ -227,7 +224,7 @@ def build_csv_rows(session, base_url, logger, vouchers, throttle):
             creation_date,
             due_date,
             kind.capitalize(),
-            format_amount(total_net),
+            format_amount(signed_total_net),
         ])
 
         if i % 25 == 0:
@@ -273,7 +270,7 @@ def build_email_report(status, error_code, log_file, out_csv, email_report_file,
     if month:
         lines.append("Period: %s" % month)
 
-    lines.append("Job: CSV B (Open Items: Receivables & Payables) [MONTH-FILTERED]")
+    lines.append("Job: CSV B (Open Items: Receivables & Payables) [MONTH-END SNAPSHOT]")
     lines.append("")
     lines.append("Summary:")
     for s in (summary_lines or []):
@@ -308,8 +305,7 @@ def main():
 
     month = args.month or prev_month_yyyy_mm()
 
-    start, end = month_range(month)
-    voucher_date_from = start.isoformat()
+    _, end = month_range(month)
     voucher_date_to = end.isoformat()
 
     if not args.log_file:
@@ -328,8 +324,8 @@ def main():
         ensure_dir("csv")
         out = os.path.join("csv", "csv_B_open_items_%s.csv" % month)
 
-    logger.info("start csv_b month=%s out=%s base_url=%s dateFrom=%s dateTo=%s",
-                month, out, base_url, voucher_date_from, voucher_date_to)
+    logger.info("start csv_b month=%s out=%s base_url=%s dateTo=%s monthEnd=%s",
+            month, out, base_url, voucher_date_to, end.isoformat())
 
     session = build_session(token)
 
@@ -339,11 +335,11 @@ def main():
 
         v_open = fetch_voucherlist(
             session, base_url, logger, voucher_types, open_statuses,
-            throttle=args.throttle, voucher_date_from=voucher_date_from, voucher_date_to=voucher_date_to
+            throttle=args.throttle, voucher_date_to=voucher_date_to
         )
         v_overdue = fetch_voucherlist(
             session, base_url, logger, voucher_types, ["overdue"],
-            throttle=args.throttle, voucher_date_from=voucher_date_from, voucher_date_to=voucher_date_to
+            throttle=args.throttle, voucher_date_to=voucher_date_to
         )
 
         combined = v_open + v_overdue
@@ -372,8 +368,8 @@ def main():
             summary_lines=[
                 "CSV generated successfully",
                 "Rows exported: %s" % len(rows),
-                "Filter: voucherDateFrom=%s voucherDateTo=%s" % (voucher_date_from, voucher_date_to),
-                "Included: open receivables + open payables + overdue (within month)",
+                "Filter: voucherDate <= %s" % voucher_date_to,
+                "Included: open receivables + open payables + overdue items by voucher date cutoff",
             ],
             hint_items=None
         )

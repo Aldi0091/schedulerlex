@@ -162,3 +162,22 @@ def compact_json(data, limit=4000):
         return s[:limit] + "...<truncated>"
     return s
 
+
+def fetch_contact_number(session, base_url, logger, contact_id, cache, throttle):
+    if not contact_id:
+        return "00000"
+    if contact_id in cache:
+        return cache[contact_id]
+
+    url = base_url + "/v1/contacts/" + contact_id
+    resp = request_json(session, "GET", url, logger, throttle=throttle)
+    if not resp["ok"]:
+        cache[contact_id] = "00000"
+        return cache[contact_id]
+
+    c = resp["data"] or {}
+    roles = c.get("roles") or {}
+
+    num = ((roles.get("customer") or {}).get("number")) or ((roles.get("vendor") or {}).get("number"))
+    cache[contact_id] = pad5(num)
+    return cache[contact_id]
