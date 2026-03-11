@@ -39,6 +39,27 @@ def prev_month_yyyy_mm(today=None):
     return "%04d-%02d" % (prev_last.year, prev_last.month)
 
 
+def pad5(n):
+    try:
+        return str(int(n)).zfill(5)
+    except Exception:
+        return "00000"
+
+
+def parse_date_ddmmyyyy(value):
+    if not value:
+        return ""
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        try:
+            d = date.fromisoformat(value[:10])
+            return d.strftime("%d.%m.%Y")
+        except Exception:
+            return value
+
+
 def month_range(yyyy_mm):
     y, m = yyyy_mm.split("-")
     y = int(y)

@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from abstract import (
     compact_json, ALLOWED_INVOICE_STATUSES,
-    ensure_dir, write_text_file, prev_month_yyyy_mm, month_range,
+    ensure_dir, write_text_file, prev_month_yyyy_mm, month_range, parse_date_ddmmyyyy,
     normalize_base, build_session, request_json,
     E_CONFIG, E_HTTP, E_SCHEMA, E_MAPPING, E_WRITE, E_RUNTIME,
     format_amount, 
@@ -55,21 +55,6 @@ def setup_logger(log_file=None, level="INFO"):
         logger.addHandler(fh)
 
     return logger
-
-
-
-def parse_date_ddmmyyyy(value):
-    if not value:
-        return ""
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return dt.strftime("%d.%m.%Y")
-    except Exception:
-        try:
-            d = date.fromisoformat(value[:10])
-            return d.strftime("%d.%m.%Y")
-        except Exception:
-            return value
 
 
 def sanitize_customer_name(name):
