@@ -1,45 +1,25 @@
 import os
 import csv
-import time
 import argparse
 import re
 import logging
-from datetime import datetime, date, timedelta
+from datetime import datetime
 
-import requests
 from dotenv import load_dotenv
 
-DEFAULT_TIMEOUT = 30
-
+from abstract import (
+    ALLOWED_INVOICE_STATUSES,
+    ensure_dir, write_text_file, prev_month_yyyy_mm, month_range,
+    normalize_base, build_session, request_json,
+    format_amount, 
+)
 
 # =========================
 # helpers
 # =========================
+
 NO_ARTICLE_NUMBER = "No Number"
 NO_ARTICLE_NAME = "Other"
-
-def format_amount(x):
-    try:
-        val = float(x)
-        s = f"{val:,.2f}"                 # 123,456.78
-        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-        return s                          # 123.456,78
-    except Exception:
-        return "0,00"
-
-def ensure_dir(path):
-    if path:
-        os.makedirs(path, exist_ok=True)
-
-
-def write_text_file(path, text):
-    ensure_dir(os.path.dirname(path))
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-
-def normalize_base(base_url):
-    return (base_url or "https://api.lexware.io").rstrip("/")
 
 
 def setup_logger(name, level="INFO"):
@@ -66,50 +46,6 @@ def setup_logger(name, level="INFO"):
 
     logger.info("logger initialized path=%s", log_path)
     return logger, log_path
-
-
-def build_session(token):
-    s = requests.Session()
-    s.headers.update({"Authorization": "Bearer " + token, "Accept": "application/json"})
-    return s
-
-
-def request_json(session, url, logger, params=None, throttle=0.6, retries=5):
-    last = None
-    for i in range(1, retries + 1):
-        time.sleep(throttle)
-        try:
-            r = session.get(url, params=params, timeout=DEFAULT_TIMEOUT)
-            if r.status_code in (429, 502, 503, 504):
-                wait = min(10, i * 1.5)
-                logger.warning("retry %s wait %.1fs", i, wait)
-                time.sleep(wait)
-                continue
-
-            return {
-                "ok": r.status_code < 400,
-                "status": r.status_code,
-                "data": r.json() if r.text else {},
-                "text": r.text[:2000],
-            }
-        except Exception as e:
-            last = str(e)
-            logger.warning("retry %s error=%s", i, e)
-    return {"ok": False, "error": last}
-
-
-def month_range(yyyy_mm):
-    y, m = map(int, yyyy_mm.split("-"))
-    start = date(y, m, 1)
-    end = date(y + (m == 12), (m % 12) + 1, 1) - timedelta(days=1)
-    return start, end
-
-
-def prev_month_yyyy_mm(today=None):
-    today = today or date.today()
-    first = date(today.year, today.month, 1)
-    prev_last = first - timedelta(days=1)
-    return "%04d-%02d" % (prev_last.year, prev_last.month)
 
 
 def looks_like_uuid(s):
@@ -160,16 +96,18 @@ def main():
     while True:
         resp = request_json(
             session,
+            "GET",
             base + "/v1/voucherlist",
             logger,
             params={
                 "voucherType": "invoice",
-                "voucherStatus": "any",
+                "voucherStatus": ALLOWED_INVOICE_STATUSES,
                 "voucherDateFrom": start.isoformat(),
                 "voucherDateTo": end.isoformat(),
                 "size": 250,
                 "page": page,
             },
+            throttle=args.throttle,
         )
         if not resp["ok"]:
             raise SystemExit(resp)
@@ -188,7 +126,10 @@ def main():
     agg = {}
 
     for idx, inv_id in enumerate(ids, 1):
-        inv = request_json(session, f"{base}/v1/invoices/{inv_id}", logger)["data"]
+        inv_resp = request_json(session, "GET", f"{base}/v1/invoices/{inv_id}", logger, throttle=args.throttle)
+        if not inv_resp["ok"]:
+            raise SystemExit(inv_resp)
+        inv = inv_resp["data"]
 
         for it in inv.get("lineItems") or []:
             if it.get("type") == "text":
@@ -199,7 +140,10 @@ def main():
             if looks_like_uuid(article_id):
 
                 if article_id not in article_cache:
-                    art = request_json(session, f"{base}/v1/articles/{article_id}", logger)["data"]
+                    art_resp = request_json(session, "GET", f"{base}/v1/articles/{article_id}", logger, throttle=args.throttle)
+                    if not art_resp["ok"]:
+                        raise SystemExit(art_resp)
+                    art = art_resp["data"]
                     article_cache[article_id] = (
                         art.get("articleNumber"),
                         art.get("title"),

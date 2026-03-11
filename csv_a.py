@@ -1,49 +1,24 @@
 # csv_a.py
 import os
 import csv
-import time
+
 import argparse
 import re
 import unicodedata
 import logging
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 
-import requests
 import yaml
 from dotenv import load_dotenv
 
-
-DEFAULT_TIMEOUT = 30
-
-# Error codes
-E_CONFIG = "E_CONFIG"
-E_HTTP = "E_HTTP"
-E_SCHEMA = "E_SCHEMA"
-E_MAPPING = "E_MAPPING"
-E_WRITE = "E_WRITE"
-E_RUNTIME = "E_RUNTIME"
-
-
-def ensure_dir(path):
-    if not path:
-        return
-    os.makedirs(path, exist_ok=True)
-
-
-def write_text_file(path, text):
-    if not path:
-        return
-    ensure_dir(os.path.dirname(path))
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-
-def prev_month_yyyy_mm(today=None):
-    today = today or date.today()
-    first = date(today.year, today.month, 1)
-    prev_last = first - timedelta(days=1)
-    return "%04d-%02d" % (prev_last.year, prev_last.month)
+from abstract import (
+    compact_json, ALLOWED_INVOICE_STATUSES,
+    ensure_dir, write_text_file, prev_month_yyyy_mm, month_range,
+    normalize_base, build_session, request_json,
+    E_CONFIG, E_HTTP, E_SCHEMA, E_MAPPING, E_WRITE, E_RUNTIME,
+    format_amount, 
+)
 
 
 def default_out_path_for_month(yyyy_mm, base_dir="csv"):
@@ -82,74 +57,6 @@ def setup_logger(log_file=None, level="INFO"):
     return logger
 
 
-def normalize_base(base_url):
-    base_url = (base_url or "").strip()
-    if not base_url:
-        return "https://api.lexware.io"
-    return base_url.rstrip("/")
-
-
-def build_session(token):
-    s = requests.Session()
-    s.headers.update({
-        "Authorization": "Bearer " + token,
-        "Accept": "application/json",
-    })
-    return s
-
-
-def safe_json(resp):
-    try:
-        return resp.json()
-    except Exception:
-        return {"raw": resp.text}
-
-
-def request_json(session, method, url, logger, params=None, throttle=0.6, max_retries=5):
-    last = None
-    for attempt in range(1, max_retries + 1):
-        if throttle:
-            time.sleep(throttle)
-
-        try:
-            if method == "GET":
-                r = session.get(url, params=params, timeout=DEFAULT_TIMEOUT)
-            else:
-                raise ValueError("Unsupported method: " + method)
-
-            if r.status_code in (429, 502, 503, 504):
-                wait = min(10, attempt * 1.5)
-                logger.warning("%s retry in %ss (attempt %s/%s) url=%s",
-                               E_HTTP, wait, attempt, max_retries, r.url)
-                time.sleep(wait)
-                last = (r.status_code, r.text[:2000])
-                continue
-
-            out = {
-                "ok": r.status_code < 400,
-                "status": r.status_code,
-                "url": r.url,
-                "data": safe_json(r),
-            }
-
-            if r.status_code >= 400:
-                text = r.text[:4000]
-                out["text"] = text
-                logger.error("%s http_error status=%s url=%s body=%s",
-                             E_HTTP, r.status_code, r.url, text)
-
-            return out
-
-        except Exception as e:
-            wait = min(10, attempt * 1.5)
-            logger.warning("%s exception retry in %ss (attempt %s/%s) -> %s",
-                           E_HTTP, wait, attempt, max_retries, e)
-            time.sleep(wait)
-            last = str(e)
-
-    logger.error("%s request_failed_after_retries url=%s last=%s", E_HTTP, url, last)
-    return {"ok": False, "status": None, "url": url, "error": last}
-
 
 def parse_date_ddmmyyyy(value):
     if not value:
@@ -163,18 +70,6 @@ def parse_date_ddmmyyyy(value):
             return d.strftime("%d.%m.%Y")
         except Exception:
             return value
-
-
-def month_range(yyyy_mm):
-    y, m = yyyy_mm.split("-")
-    y = int(y)
-    m = int(m)
-    start = date(y, m, 1)
-    if m == 12:
-        end = date(y + 1, 1, 1) - timedelta(days=1)
-    else:
-        end = date(y, m + 1, 1) - timedelta(days=1)
-    return start, end
 
 
 def sanitize_customer_name(name):
@@ -290,30 +185,34 @@ def extract_invoice_fields(inv):
 
     invoice_date = parse_date_ddmmyyyy(inv.get("voucherDate") or inv.get("createdDate") or "")
 
-    customer_name = ""
     addr = inv.get("address") or {}
+    contact = inv.get("contact") or {}
+
+    customer_id = ""
+    if isinstance(addr, dict):
+        customer_id = addr.get("contactId") or ""
+    if not customer_id and isinstance(contact, dict):
+        customer_id = contact.get("id") or ""
+
+    customer_name = ""
     if isinstance(addr, dict):
         customer_name = addr.get("name") or ""
-
-    if not customer_name:
-        customer_name = (inv.get("contact") or {}).get("name") or ""
+    if not customer_name and isinstance(contact, dict):
+        customer_name = contact.get("name") or ""
 
     customer_name = sanitize_customer_name(customer_name)
-    return invoice_number, invoice_date, customer_name
+    return invoice_number, invoice_date, customer_id, customer_name
 
-
-def format_amount(x):
-    try:
-        val = float(x)
-        s = f"{val:,.2f}"          # 123,456.78
-        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-        return s                   # 123.456,78
-    except Exception:
-        return "0,00"
 
 
 def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
-    invoice_number, invoice_date, customer_name = extract_invoice_fields(inv)
+    """
+        Main row builder method:
+        - intale RAW data;
+        - prepares CLEAN-ed CSV output data/rows;
+
+    """
+    invoice_number, invoice_date, customer_id, customer_name = extract_invoice_fields(inv)
     inv_id = inv.get("id") or ""
 
     grouped = {}
@@ -336,6 +235,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
         rows.append([
             invoice_number,
             invoice_date,
+            customer_id,
             customer_name,
             cat,
             format_amount(grouped[cat]),
@@ -351,6 +251,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
         rows.append([
             invoice_number,
             invoice_date,
+            customer_id,
             customer_name,
             "Rebate / Adjustment",
             format_amount(diff),
@@ -359,6 +260,7 @@ def build_rows_for_invoice(inv, mapping, logger, log_unmapped=False):
     rows.append([
         invoice_number,
         invoice_date,
+        customer_id,
         customer_name,
         "TotalInvoice",
         format_amount(invoice_total),
@@ -383,7 +285,7 @@ def fetch_invoice_ids_for_month(session, base_url, yyyy_mm, throttle, logger):
 
     params = {
         "voucherType": "invoice",
-        "voucherStatus": "any",
+        "voucherStatus": ALLOWED_INVOICE_STATUSES , # or "any"
         "voucherDateFrom": start.isoformat(),
         "voucherDateTo": end.isoformat(),
         "size": 250,
@@ -402,6 +304,7 @@ def fetch_invoice_ids_for_month(session, base_url, yyyy_mm, throttle, logger):
         logger.info("voucherlist page=%s got=%s", params["page"], len(content))
 
         for row in content:
+            logger.info("voucherlist_row url=%s row=%s", url, compact_json(row))
             if "id" in row:
                 ids.append(row["id"])
 
@@ -415,7 +318,7 @@ def fetch_invoice_ids_for_month(session, base_url, yyyy_mm, throttle, logger):
 
 
 def write_csv(path, rows, delimiter=",", logger=None):
-    header = ["InvoiceNumber", "Date", "Customer", "Category", "AmountEUR"]
+    header = ["InvoiceNumber", "Date", "CustomerId", "Customer", "Category", "AmountEUR"]
     try:
         ensure_dir(os.path.dirname(path))
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -544,6 +447,12 @@ def main():
                 logger.info("fetch invoice %s/%s id=%s", i, len(ids), invoice_id)
                 try:
                     inv = fetch_invoice(session, base_url, invoice_id, args.throttle, logger)
+                    logger.info(
+                        "invoice_payload invoiceId=%s base_url=%s payload=%s",
+                        invoice_id,
+                        base_url,
+                        compact_json(inv),
+                    )
                     all_rows.extend(build_rows_for_invoice(inv, mapping, logger, log_unmapped=args.log_unmapped))
                 except Exception as e:
                     msg = "%s invoice_failed id=%s err=%s" % (E_RUNTIME, invoice_id, e)
