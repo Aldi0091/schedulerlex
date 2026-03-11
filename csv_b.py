@@ -67,6 +67,41 @@ def sanitize_partner_name(name):
     return s
 
 
+def parse_iso_to_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except Exception:
+        try:
+            return date.fromisoformat(value[:10])
+        except Exception:
+            return None
+
+
+def filter_vouchers_created_not_after(vouchers, cutoff_date, logger=None):
+    kept = []
+    dropped = 0
+
+    for v in vouchers:
+        created = parse_iso_to_date(v.get("createdDate") or "")
+        if created is None:
+            kept.append(v)
+            continue
+        if created <= cutoff_date:
+            kept.append(v)
+        else:
+            dropped += 1
+
+    if logger:
+        logger.info(
+            "createdDate cutoff applied kept=%s dropped=%s cutoff=%s",
+            len(kept), dropped, cutoff_date.isoformat()
+        )
+
+    return kept
+
+
 def fetch_voucherlist(session, base_url, logger, voucher_types, voucher_statuses, throttle, size=250,
                      voucher_date_from=None, voucher_date_to=None):
     url = base_url + "/v1/voucherlist"
@@ -355,6 +390,9 @@ def main():
         combined = unique
         logger.info("voucherlist combined total=%s (open=%s overdue=%s)", len(combined), len(v_open), len(v_overdue))
 
+        combined = filter_vouchers_created_not_after(combined, end, logger)
+        logger.info("voucherlist after createdDate cutoff total=%s", len(combined))
+
         rows = build_csv_rows(session, base_url, logger, combined, throttle=args.throttle)
         write_csv(out, rows, delimiter=args.delimiter, logger=logger)
 
@@ -369,7 +407,8 @@ def main():
                 "CSV generated successfully",
                 "Rows exported: %s" % len(rows),
                 "Filter: voucherDate <= %s" % voucher_date_to,
-                "Included: open receivables + open payables + overdue items by voucher date cutoff",
+                "Filter: createdDate <= %s" % end.isoformat(),
+                "Included: open receivables + open payables + overdue items existing by month end, including older unpaid invoices",
             ],
             hint_items=None
         )
